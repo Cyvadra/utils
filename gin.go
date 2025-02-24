@@ -8,7 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func LimitConcurrent(maxConcurrent int, errorHandler gin.HandlerFunc) gin.HandlerFunc {
+func LimitConcurrent(maxConcurrent int, errorHandler func(*gin.Context)) gin.HandlerFunc {
 	semaphore := make(chan bool, maxConcurrent)
 	return func(c *gin.Context) {
 		select {
