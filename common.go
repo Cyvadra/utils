@@ -5,21 +5,6 @@ import (
 )
 
 func Intval(s string) (v int) {
-  v, _ = strconv.Atoi(s)
-  return
-  }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+	v, _ = strconv.Atoi(s)
+	return
+}
