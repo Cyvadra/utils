@@ -8,13 +8,14 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func LimitConcurrent(maxConcurrent int, errorHandler func(*gin.Context)) gin.HandlerFunc {
-	semaphore := make(chan bool, maxConcurrent)
+func LimitConcurrent(maxConcurrent uint64, errorHandler func(*gin.Context)) gin.HandlerFunc {
+	semaphore := make(chan struct{}, maxConcurrent)
 	return func(c *gin.Context) {
 		select {
-		case semaphore <- true:
+		case semaphore <- struct{}{}:
+			// make sure message is released even panic happens
+			defer func() { <-semaphore }()
 			c.Next()
-			<-semaphore
 		default:
 			errorHandler(c)
 			return
