@@ -33,23 +33,29 @@ func main() {
 		panic(err)
 	}
 
-	_ = bot.SendMarkdown(context.Background(), "# Deployment\nService is healthy")
-}
+	_, err = bot.SendMarkdown(context.Background(), "# Deployment\nService is healthy")
+	if err != nil {
+		panic(err)
+	}
 ```
 
 Registering a duplicate name or webhook returns an error. `wecom.Get(name)`
 retrieves a previously registered service. Webhook URLs are secrets; provide
-them through configuration and do not commit them to source control.
+them through configuration and do not commit them to source control. Empty or
+whitespace-only content is rejected before any request is sent.
 
 Text messages larger than 2,048 bytes and markdown messages larger than 4,096
 bytes are split into ordered requests, preferring newline boundaries and then
 valid UTF-8 boundaries. A failure after one or more chunks can result in partial
-delivery.
+delivery; `Send` and `SendMarkdown` return the number of chunks delivered before
+the first failure. A provided `Mention` applies to the first chunk of a split
+message, so a mention is not repeated for every chunk.
 
 Each bot is independently limited to 20 requests per minute by default. Sending
 waits for capacity and observes context cancellation. Use
 `wecom.WithRateLimit(limit, interval)` during `Register` to set a different
-per-bot limit when needed.
+per-bot limit when needed. Webhook requests use a 10-second timeout by default;
+override it with `wecom.WithHTTPClient`.
 
 ## Telegram notifications
 
@@ -92,17 +98,26 @@ func main() {
 Registering the same name or token/chat pair returns an error. A bot token may
 be registered for multiple destinations, and `telegram.Get(name)` retrieves an
 existing service. Bot tokens are secrets; load them from configuration and never
-commit them to source control.
+commit them to source control. The first registration of a token fixes the
+shared bot rate limit; a later registration for the same token must use the same
+values or fails with `telegram.ErrBotRateLimitConflict`.
 
 Messages longer than Telegram's 4,096-character limit are split in order. Plain
 text prefers newline boundaries. MarkdownV2 and HTML are validated and split
 with active formatting closed and reopened for each chunk. Invalid markup fails
 before delivery; a later request failure can still yield partial delivery, so
 send methods return all successful `telegram.Message` results with the error.
+The split limit is measured in Go runes; Telegram may measure emoji in UTF-16
+units and count raw markup (link URLs, HTML entities), so messages dense in
+emoji or markup can still exceed Telegram's limit despite passing local
+splitting. MarkdownV2 delimiters follow Telegram's word-boundary rules, so a
+bare `_` or `*` between spaces is treated as a literal character rather than an
+unclosed entity.
 
 By default each destination is limited to 20 requests per minute, while every
 service using the same token shares a 30 requests-per-second cap. Both waits
 respect context cancellation. A Telegram 429 response containing `retry_after`
-is retried once after the requested delay. Override limits during registration
-with `telegram.WithBotRateLimit` and `telegram.WithChatRateLimit` for known
-traffic patterns.
+is retried once after the requested delay. Bot API requests use a 10-second
+timeout by default; override it with `telegram.WithHTTPClient`. Override limits
+during registration with `telegram.WithBotRateLimit` and
+`telegram.WithChatRateLimit` for known traffic patterns.

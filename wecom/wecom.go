@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"github.com/Cyvadra/utils/internal/ratelimit"
+	"github.com/Cyvadra/utils/internal/webhook"
 )
 
 const (
@@ -21,6 +24,7 @@ var (
 	ErrInvalidWebhookURL = errors.New("wecom: invalid webhook URL")
 	ErrBotRegistered     = errors.New("wecom: bot already registered")
 	ErrInvalidResponse   = errors.New("wecom: invalid webhook response")
+	ErrEmptyContent      = errors.New("wecom: message content cannot be empty")
 )
 
 // Service sends messages through one registered WeCom bot.
@@ -28,7 +32,7 @@ type Service struct {
 	name       string
 	webhookURL string
 	client     *http.Client
-	limiter    *limiter
+	limiter    *ratelimit.Limiter
 }
 
 // Name returns the unique name used to register the bot.
@@ -47,7 +51,7 @@ type config struct {
 
 func defaultConfig() config {
 	return config{
-		client:       http.DefaultClient,
+		client:       webhook.DefaultClient,
 		rateLimit:    DefaultRateLimit,
 		rateInterval: time.Minute,
 	}
@@ -94,8 +98,8 @@ type APIError struct {
 	Message string
 }
 
-func (error *APIError) Error() string {
-	return fmt.Sprintf("wecom: API error %d: %s", error.Code, error.Message)
+func (e *APIError) Error() string {
+	return fmt.Sprintf("wecom: API error %d: %s", e.Code, e.Message)
 }
 
 // HTTPStatusError is returned when the webhook responds with a non-success status.
@@ -103,6 +107,6 @@ type HTTPStatusError struct {
 	StatusCode int
 }
 
-func (error *HTTPStatusError) Error() string {
-	return fmt.Sprintf("wecom: unexpected HTTP status %d", error.StatusCode)
+func (e *HTTPStatusError) Error() string {
+	return fmt.Sprintf("wecom: unexpected HTTP status %d", e.StatusCode)
 }

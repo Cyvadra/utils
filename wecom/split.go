@@ -16,6 +16,12 @@ func splitContent(content string, maxBytes int) []string {
 		if cut == 0 {
 			cut = runeBoundary(content, maxBytes)
 		}
+		if cut == 0 {
+			// Guard against byte limits smaller than a single multibyte rune:
+			// consume one full rune so progress is guaranteed.
+			_, width := utf8.DecodeRuneInString(content)
+			cut = width
+		}
 		chunks = append(chunks, content[:cut])
 		content = content[cut:]
 	}

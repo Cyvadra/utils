@@ -1,15 +1,15 @@
 package telegram
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/Cyvadra/utils/internal/webhook"
 )
 
 type sendMessageRequest struct {
@@ -101,36 +101,25 @@ func (service *Service) sendChunk(ctx context.Context, payload sendMessageReques
 }
 
 func (service *Service) wait(ctx context.Context) error {
-	if err := service.botLimiter.wait(ctx); err != nil {
+	if err := service.botLimiter.Wait(ctx); err != nil {
 		return err
 	}
-	return service.chatLimiter.wait(ctx)
+	return service.chatLimiter.Wait(ctx)
 }
 
 func (service *Service) dispatch(ctx context.Context, payload sendMessageRequest) (Message, error) {
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return Message{}, fmt.Errorf("telegram: encode message: %w", err)
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, service.baseURL+"/bot"+service.token+"/sendMessage", bytes.NewReader(body))
-	if err != nil {
-		return Message{}, fmt.Errorf("telegram: create request: %w", err)
-	}
-	request.Header.Set("Content-Type", "application/json")
-
-	response, err := service.client.Do(request)
-	if err != nil {
-		return Message{}, fmt.Errorf("telegram: send request: %w", err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		io.Copy(io.Discard, response.Body)
-		return Message{}, &HTTPStatusError{StatusCode: response.StatusCode}
-	}
-
+	url := service.baseURL + "/bot" + service.token + "/sendMessage"
 	var result telegramResponse
-	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
-		return Message{}, fmt.Errorf("%w: %v", ErrInvalidResponse, err)
+	if err := webhook.SendJSON(ctx, service.client, url, payload, &result); err != nil {
+		var statusErr *webhook.HTTPStatusError
+		if errors.As(err, &statusErr) {
+			return Message{}, &HTTPStatusError{StatusCode: statusErr.StatusCode}
+		}
+		var decodeErr *webhook.DecodeError
+		if errors.As(err, &decodeErr) {
+			return Message{}, fmt.Errorf("%w: %v", ErrInvalidResponse, decodeErr.Err)
+		}
+		return Message{}, fmt.Errorf("telegram: %w", err)
 	}
 	if !result.OK {
 		return Message{}, &APIError{

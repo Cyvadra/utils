@@ -1,12 +1,12 @@
 package wecom
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
-	"net/http"
+	"strings"
+
+	"github.com/Cyvadra/utils/internal/webhook"
 )
 
 type webhookResponse struct {
@@ -30,68 +30,63 @@ type markdownPayload struct {
 	} `json:"markdown"`
 }
 
-// Send sends a text message. A provided Mention applies to every chunk of a long message.
-func (service *Service) Send(ctx context.Context, content string, mentions ...Mention) error {
-	mention := mergeMentions(mentions)
-	return service.sendText(ctx, content, mention)
+// Send sends a text message and returns the number of chunks delivered. A
+// provided Mention applies to the first chunk of a long message.
+func (service *Service) Send(ctx context.Context, content string, mentions ...Mention) (int, error) {
+	if strings.TrimSpace(content) == "" {
+		return 0, ErrEmptyContent
+	}
+	return service.sendText(ctx, content, mergeMentions(mentions))
 }
 
-// SendMarkdown sends a classic WeCom markdown message. To mention a user, use the
-// supported inline <@userid> syntax in content.
-func (service *Service) SendMarkdown(ctx context.Context, content string) error {
+// SendMarkdown sends a classic WeCom markdown message and returns the number of
+// chunks delivered. To mention a user, use the supported inline <@userid> syntax.
+func (service *Service) SendMarkdown(ctx context.Context, content string) (int, error) {
+	if strings.TrimSpace(content) == "" {
+		return 0, ErrEmptyContent
+	}
 	chunks := splitContent(content, MarkdownLimit)
 	for index, chunk := range chunks {
 		payload := markdownPayload{MessageType: "markdown"}
 		payload.Markdown.Content = chunk
 		if err := service.dispatch(ctx, payload); err != nil {
-			return fmt.Errorf("wecom: send markdown chunk %d of %d: %w", index+1, len(chunks), err)
+			return index, fmt.Errorf("wecom: send markdown chunk %d of %d: %w", index+1, len(chunks), err)
 		}
 	}
-	return nil
+	return len(chunks), nil
 }
 
-func (service *Service) sendText(ctx context.Context, content string, mention Mention) error {
+func (service *Service) sendText(ctx context.Context, content string, mention Mention) (int, error) {
 	chunks := splitContent(content, TextLimit)
 	for index, chunk := range chunks {
 		payload := textPayload{MessageType: "text"}
 		payload.Text.Content = chunk
-		payload.Text.MentionedList = mention.UserIDs
-		payload.Text.MentionedMobileList = mention.MobileNumbers
+		if index == 0 {
+			payload.Text.MentionedList = mention.UserIDs
+			payload.Text.MentionedMobileList = mention.MobileNumbers
+		}
 		if err := service.dispatch(ctx, payload); err != nil {
-			return fmt.Errorf("wecom: send text chunk %d of %d: %w", index+1, len(chunks), err)
+			return index, fmt.Errorf("wecom: send text chunk %d of %d: %w", index+1, len(chunks), err)
 		}
 	}
-	return nil
+	return len(chunks), nil
 }
 
 func (service *Service) dispatch(ctx context.Context, payload any) error {
-	if err := service.limiter.wait(ctx); err != nil {
+	if err := service.limiter.Wait(ctx); err != nil {
 		return err
 	}
-
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("wecom: encode message: %w", err)
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, service.webhookURL, bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("wecom: create webhook request: %w", err)
-	}
-	request.Header.Set("Content-Type", "application/json")
-
-	response, err := service.client.Do(request)
-	if err != nil {
-		return fmt.Errorf("wecom: send webhook request: %w", err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		io.Copy(io.Discard, response.Body)
-		return &HTTPStatusError{StatusCode: response.StatusCode}
-	}
-
 	var result webhookResponse
-	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidResponse, err)
+	if err := webhook.SendJSON(ctx, service.client, service.webhookURL, payload, &result); err != nil {
+		var statusErr *webhook.HTTPStatusError
+		if errors.As(err, &statusErr) {
+			return &HTTPStatusError{StatusCode: statusErr.StatusCode}
+		}
+		var decodeErr *webhook.DecodeError
+		if errors.As(err, &decodeErr) {
+			return fmt.Errorf("%w: %v", ErrInvalidResponse, decodeErr.Err)
+		}
+		return fmt.Errorf("wecom: %w", err)
 	}
 	if result.ErrorCode != 0 {
 		return &APIError{Code: result.ErrorCode, Message: result.ErrorMsg}
@@ -109,5 +104,20 @@ func mergeMentions(mentions []Mention) Mention {
 	if merged.All {
 		merged.UserIDs = append(merged.UserIDs, "@all")
 	}
+	merged.UserIDs = uniqueStrings(merged.UserIDs)
+	merged.MobileNumbers = uniqueStrings(merged.MobileNumbers)
 	return merged
+}
+
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
 }

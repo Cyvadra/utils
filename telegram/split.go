@@ -1,7 +1,5 @@
 package telegram
 
-import "strings"
-
 func splitText(text string) ([]string, error) {
 	if text == "" {
 		return nil, ErrEmptyText
@@ -26,10 +24,9 @@ func splitText(text string) ([]string, error) {
 	return append(chunks, string(characters)), nil
 }
 
+// renderedLength reports the number of visible characters in text. Telegram's
+// character limit is counted here in runes; see the README for the known
+// divergence from UTF-16 measurement and raw markup length.
 func renderedLength(text string) int {
 	return len([]rune(text))
-}
-
-func joinChunks(chunks []string) string {
-	return strings.Join(chunks, "")
 }

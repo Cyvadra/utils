@@ -3,6 +3,7 @@ package telegram
 import (
 	"fmt"
 	"html"
+	"io"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -41,7 +42,7 @@ func htmlUnits(text string) ([]markupUnit, error) {
 		tokenType := tokenizer.Next()
 		switch tokenType {
 		case xhtml.ErrorToken:
-			if tokenizer.Err() != nil && tokenizer.Err().Error() != "EOF" {
+			if tokenizer.Err() != io.EOF {
 				return nil, fmt.Errorf("%w: %v", ErrInvalidMarkup, tokenizer.Err())
 			}
 			if len(stack) != 0 {

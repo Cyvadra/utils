@@ -6,20 +6,21 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
-	"sync"
+
+	"github.com/Cyvadra/utils/internal/ratelimit"
+	"github.com/Cyvadra/utils/internal/registry"
 )
 
 var tokenPattern = regexp.MustCompile(`^[0-9]+:[A-Za-z0-9_-]+$`)
 
 var services = struct {
-	sync.RWMutex
-	byName   map[string]*Service
-	byTarget map[string]*Service
-	byToken  map[string]*limiter
+	byName   *registry.Registry[*Service]
+	byTarget *registry.Registry[*Service]
+	byToken  *registry.Registry[*ratelimit.Limiter]
 }{
-	byName:   make(map[string]*Service),
-	byTarget: make(map[string]*Service),
-	byToken:  make(map[string]*limiter),
+	byName:   registry.New[*Service](),
+	byTarget: registry.New[*Service](),
+	byToken:  registry.New[*ratelimit.Limiter](),
 }
 
 // Register validates and stores a named Telegram bot and default destination.
@@ -51,21 +52,15 @@ func Register(name, token, chatID string, options ...Option) (*Service, error) {
 		return nil, err
 	}
 
-	targetKey := token + "\x00" + chatID
-	services.Lock()
-	defer services.Unlock()
-	if _, exists := services.byName[name]; exists {
-		return nil, fmt.Errorf("%w: name %q", ErrRegistered, name)
-	}
-	if _, exists := services.byTarget[targetKey]; exists {
-		return nil, fmt.Errorf("%w: bot and chat are already registered", ErrRegistered)
+	// Resolve the bot-wide limiter shared by every service using this token.
+	// The first registration fixes its limits; conflicting limits are rejected.
+	botLimiter := services.byToken.GetOrCreate(token, func() *ratelimit.Limiter {
+		return ratelimit.New(config.botRateLimit, config.botRateInterval)
+	})
+	if botLimiter.Limit() != config.botRateLimit || botLimiter.Interval() != config.botRateInterval {
+		return nil, fmt.Errorf("%w (existing: %d per %s)", ErrBotRateLimitConflict, botLimiter.Limit(), botLimiter.Interval())
 	}
 
-	botLimiter, exists := services.byToken[token]
-	if !exists {
-		botLimiter = newLimiter(config.botRateLimit, config.botRateInterval)
-		services.byToken[token] = botLimiter
-	}
 	service := &Service{
 		name:        name,
 		chatID:      chatID,
@@ -73,19 +68,23 @@ func Register(name, token, chatID string, options ...Option) (*Service, error) {
 		baseURL:     baseURL,
 		client:      config.client,
 		botLimiter:  botLimiter,
-		chatLimiter: newLimiter(config.chatRateLimit, config.chatRateInterval),
+		chatLimiter: ratelimit.New(config.chatRateLimit, config.chatRateInterval),
 	}
-	services.byName[name] = service
-	services.byTarget[targetKey] = service
+
+	targetKey := token + "\x00" + chatID
+	if err := services.byName.Register(name, service); err != nil {
+		return nil, fmt.Errorf("%w: name %q", ErrRegistered, name)
+	}
+	if err := services.byTarget.Register(targetKey, service); err != nil {
+		services.byName.Delete(name)
+		return nil, fmt.Errorf("%w: bot and chat are already registered", ErrRegistered)
+	}
 	return service, nil
 }
 
 // Get returns the service registered with name.
 func Get(name string) (*Service, bool) {
-	services.RLock()
-	defer services.RUnlock()
-	service, exists := services.byName[name]
-	return service, exists
+	return services.byName.Get(strings.TrimSpace(name))
 }
 
 func validChatID(chatID string) bool {
@@ -109,5 +108,9 @@ func canonicalBaseURL(rawURL string) (string, error) {
 	if err != nil || baseURL.Scheme == "" || baseURL.Host == "" {
 		return "", errors.New("telegram: invalid API base URL")
 	}
+	if baseURL.Path != "" && baseURL.Path != "/" {
+		return "", errors.New("telegram: API base URL must not include a path")
+	}
+	baseURL.Path = ""
 	return strings.TrimRight(baseURL.String(), "/"), nil
 }

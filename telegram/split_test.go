@@ -34,3 +34,8 @@ func TestSplitText(t *testing.T) {
 		})
 	}
 }
+
+// joinChunks is a test-only helper that reconstructs the original input.
+func joinChunks(chunks []string) string {
+	return strings.Join(chunks, "")
+}

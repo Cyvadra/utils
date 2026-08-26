@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"github.com/Cyvadra/utils/internal/ratelimit"
+	"github.com/Cyvadra/utils/internal/webhook"
 )
 
 const (
@@ -22,14 +25,15 @@ const (
 )
 
 var (
-	ErrInvalidName     = errors.New("telegram: invalid service name")
-	ErrInvalidToken    = errors.New("telegram: invalid bot token")
-	ErrInvalidChatID   = errors.New("telegram: invalid chat ID")
-	ErrRegistered      = errors.New("telegram: service already registered")
-	ErrEmptyText       = errors.New("telegram: message text cannot be empty")
-	ErrInvalidMarkup   = errors.New("telegram: invalid markup")
-	ErrCannotSplit     = errors.New("telegram: formatted message cannot be split safely")
-	ErrInvalidResponse = errors.New("telegram: invalid API response")
+	ErrInvalidName          = errors.New("telegram: invalid service name")
+	ErrInvalidToken         = errors.New("telegram: invalid bot token")
+	ErrInvalidChatID        = errors.New("telegram: invalid chat ID")
+	ErrRegistered           = errors.New("telegram: service already registered")
+	ErrBotRateLimitConflict = errors.New("telegram: bot rate limit conflicts with an existing registration for this token")
+	ErrEmptyText            = errors.New("telegram: message text cannot be empty")
+	ErrInvalidMarkup        = errors.New("telegram: invalid markup")
+	ErrCannotSplit          = errors.New("telegram: formatted message cannot be split safely")
+	ErrInvalidResponse      = errors.New("telegram: invalid API response")
 )
 
 // Service sends notifications to one default Telegram chat.
@@ -39,8 +43,8 @@ type Service struct {
 	token       string
 	baseURL     string
 	client      *http.Client
-	botLimiter  *limiter
-	chatLimiter *limiter
+	botLimiter  *ratelimit.Limiter
+	chatLimiter *ratelimit.Limiter
 }
 
 // Name returns the unique name used to register the service.
@@ -75,7 +79,7 @@ type config struct {
 
 func defaultConfig() config {
 	return config{
-		client:           http.DefaultClient,
+		client:           webhook.DefaultClient,
 		baseURL:          "https://api.telegram.org",
 		botRateLimit:     DefaultBotRateLimit,
 		botRateInterval:  DefaultBotRateInterval,
@@ -107,32 +111,39 @@ func WithBaseURL(baseURL string) Option {
 }
 
 // WithBotRateLimit sets the shared request limit for all services using one token.
+// The first registration of a token fixes the shared limit; later registrations for
+// the same token must use the same values or fail with ErrBotRateLimitConflict.
 func WithBotRateLimit(limit int, interval time.Duration) Option {
-	return rateLimitOption("bot", limit, interval, func(config *config, limit int, interval time.Duration) {
+	return func(config *config) error {
+		if err := validateRateLimit("bot", limit, interval); err != nil {
+			return err
+		}
 		config.botRateLimit = limit
 		config.botRateInterval = interval
-	})
+		return nil
+	}
 }
 
 // WithChatRateLimit sets the request limit for this service's default chat.
 func WithChatRateLimit(limit int, interval time.Duration) Option {
-	return rateLimitOption("chat", limit, interval, func(config *config, limit int, interval time.Duration) {
+	return func(config *config) error {
+		if err := validateRateLimit("chat", limit, interval); err != nil {
+			return err
+		}
 		config.chatRateLimit = limit
 		config.chatRateInterval = interval
-	})
-}
-
-func rateLimitOption(scope string, limit int, interval time.Duration, apply func(*config, int, time.Duration)) Option {
-	return func(config *config) error {
-		if limit < 1 {
-			return fmt.Errorf("telegram: %s rate limit must be positive", scope)
-		}
-		if interval <= 0 {
-			return fmt.Errorf("telegram: %s rate limit interval must be positive", scope)
-		}
-		apply(config, limit, interval)
 		return nil
 	}
+}
+
+func validateRateLimit(scope string, limit int, interval time.Duration) error {
+	if limit < 1 {
+		return fmt.Errorf("telegram: %s rate limit must be positive", scope)
+	}
+	if interval <= 0 {
+		return fmt.Errorf("telegram: %s rate limit interval must be positive", scope)
+	}
+	return nil
 }
 
 // APIError is returned when Telegram rejects a request.
@@ -143,8 +154,8 @@ type APIError struct {
 	MigrateToChatID string
 }
 
-func (error *APIError) Error() string {
-	return fmt.Sprintf("telegram: API error %d: %s", error.Code, error.Description)
+func (e *APIError) Error() string {
+	return fmt.Sprintf("telegram: API error %d: %s", e.Code, e.Description)
 }
 
 // HTTPStatusError is returned when the Bot API responds with a non-success status.
@@ -152,6 +163,6 @@ type HTTPStatusError struct {
 	StatusCode int
 }
 
-func (error *HTTPStatusError) Error() string {
-	return fmt.Sprintf("telegram: unexpected HTTP status %d", error.StatusCode)
+func (e *HTTPStatusError) Error() string {
+	return fmt.Sprintf("telegram: unexpected HTTP status %d", e.StatusCode)
 }
