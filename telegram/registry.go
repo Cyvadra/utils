@@ -92,9 +92,7 @@ func validChatID(chatID string) bool {
 	if strings.HasPrefix(chatID, "@") {
 		return len(chatID) > 1
 	}
-	if strings.HasPrefix(chatID, "-") {
-		chatID = chatID[1:]
-	}
+	chatID = strings.TrimPrefix(chatID, "-")
 	if chatID == "" {
 		return false
 	}
