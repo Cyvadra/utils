@@ -5,6 +5,7 @@ go 1.26.6
 require (
 	github.com/gin-gonic/gin v1.12.0
 	github.com/stretchr/testify v1.11.1
+	golang.org/x/net v0.58.0
 )
 
 require (
@@ -35,7 +36,6 @@ require (
 	go.mongodb.org/mongo-driver/v2 v2.8.1 // indirect
 	golang.org/x/arch v0.30.0 // indirect
 	golang.org/x/crypto v0.55.0 // indirect
-	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
