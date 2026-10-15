@@ -39,20 +39,27 @@ func (e *DecodeError) Unwrap() error {
 }
 
 // SendJSON marshals payload and POSTs it to url as JSON, then decodes the
-// response body into dst. It returns:
-//   - *HTTPStatusError for a non-2xx status (the body is drained first)
-//   - *DecodeError when the body cannot be decoded into dst
-//   - an error wrapping any encode, request, or transport failure
+// response body into dst. Errors are as for Send, plus an error wrapping any
+// encode failure.
 func SendJSON(ctx context.Context, client *http.Client, url string, payload, dst any) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("encode message: %w", err)
 	}
+	return Send(ctx, client, url, "application/json", body, dst)
+}
+
+// Send POSTs body to url with the given content type, then decodes the
+// response body into dst. It returns:
+//   - *HTTPStatusError for a non-2xx status (the body is drained first)
+//   - *DecodeError when the body cannot be decoded into dst
+//   - an error wrapping any request or transport failure
+func Send(ctx context.Context, client *http.Client, url, contentType string, body []byte, dst any) error {
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
-	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Content-Type", contentType)
 
 	response, err := client.Do(request)
 	if err != nil {

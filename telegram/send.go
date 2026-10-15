@@ -19,21 +19,44 @@ type sendMessageRequest struct {
 }
 
 type telegramResponse struct {
-	OK     bool `json:"ok"`
-	Result struct {
-		ID   int64 `json:"message_id"`
-		Date int64 `json:"date"`
-		Chat struct {
-			ID json.RawMessage `json:"id"`
-		} `json:"chat"`
-		Text string `json:"text"`
-	} `json:"result"`
-	ErrorCode   int    `json:"error_code"`
-	Description string `json:"description"`
+	OK          bool            `json:"ok"`
+	Result      json.RawMessage `json:"result"`
+	ErrorCode   int             `json:"error_code"`
+	Description string          `json:"description"`
 	Parameters  struct {
 		RetryAfter      int64           `json:"retry_after"`
 		MigrateToChatID json.RawMessage `json:"migrate_to_chat_id"`
 	} `json:"parameters"`
+}
+
+type messageResult struct {
+	ID   int64 `json:"message_id"`
+	Date int64 `json:"date"`
+	Chat struct {
+		ID json.RawMessage `json:"id"`
+	} `json:"chat"`
+	Text    string `json:"text"`
+	Caption string `json:"caption"`
+}
+
+func (result messageResult) message() Message {
+	text := result.Text
+	if text == "" {
+		text = result.Caption
+	}
+	return Message{
+		ID:     result.ID,
+		Date:   time.Unix(result.Date, 0),
+		ChatID: chatIDFromJSON(result.Chat.ID),
+		Text:   text,
+	}
+}
+
+// request is one Bot API call, kept as encoded bytes so it can be retried.
+type request struct {
+	method      string
+	contentType string
+	body        []byte
 }
 
 // Send sends plain text to the service's default chat.
@@ -80,24 +103,38 @@ func (service *Service) sendChunks(ctx context.Context, chunks []string, parseMo
 }
 
 func (service *Service) sendChunk(ctx context.Context, payload sendMessageRequest) (Message, error) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return Message{}, fmt.Errorf("telegram: encode message: %w", err)
+	}
+	var result messageResult
+	if err := service.call(ctx, request{method: "sendMessage", contentType: "application/json", body: body}, &result); err != nil {
+		return Message{}, err
+	}
+	return result.message(), nil
+}
+
+// call sends req, retrying once when Telegram asks to back off, and decodes
+// the response's result into dst.
+func (service *Service) call(ctx context.Context, req request, dst any) error {
 	for attempt := 0; attempt < 2; attempt++ {
 		if err := service.wait(ctx); err != nil {
-			return Message{}, err
+			return err
 		}
-		message, err := service.dispatch(ctx, payload)
+		err := service.dispatch(ctx, req, dst)
 		if err == nil {
-			return message, nil
+			return nil
 		}
 		var apiError *APIError
 		if attempt == 0 && errors.As(err, &apiError) && apiError.Code == http.StatusTooManyRequests && apiError.RetryAfter > 0 {
 			if err := waitDuration(ctx, apiError.RetryAfter); err != nil {
-				return Message{}, err
+				return err
 			}
 			continue
 		}
-		return Message{}, err
+		return err
 	}
-	return Message{}, errors.New("telegram: retry attempts exhausted")
+	return errors.New("telegram: retry attempts exhausted")
 }
 
 func (service *Service) wait(ctx context.Context) error {
@@ -107,34 +144,32 @@ func (service *Service) wait(ctx context.Context) error {
 	return service.chatLimiter.Wait(ctx)
 }
 
-func (service *Service) dispatch(ctx context.Context, payload sendMessageRequest) (Message, error) {
-	url := service.baseURL + "/bot" + service.token + "/sendMessage"
+func (service *Service) dispatch(ctx context.Context, req request, dst any) error {
+	url := service.baseURL + "/bot" + service.token + "/" + req.method
 	var result telegramResponse
-	if err := webhook.SendJSON(ctx, service.client, url, payload, &result); err != nil {
+	if err := webhook.Send(ctx, service.client, url, req.contentType, req.body, &result); err != nil {
 		var statusErr *webhook.HTTPStatusError
 		if errors.As(err, &statusErr) {
-			return Message{}, &HTTPStatusError{StatusCode: statusErr.StatusCode}
+			return &HTTPStatusError{StatusCode: statusErr.StatusCode}
 		}
 		var decodeErr *webhook.DecodeError
 		if errors.As(err, &decodeErr) {
-			return Message{}, fmt.Errorf("%w: %v", ErrInvalidResponse, decodeErr.Err)
+			return fmt.Errorf("%w: %v", ErrInvalidResponse, decodeErr.Err)
 		}
-		return Message{}, fmt.Errorf("telegram: %w", err)
+		return fmt.Errorf("telegram: %w", err)
 	}
 	if !result.OK {
-		return Message{}, &APIError{
+		return &APIError{
 			Code:            result.ErrorCode,
 			Description:     result.Description,
 			RetryAfter:      time.Duration(result.Parameters.RetryAfter) * time.Second,
 			MigrateToChatID: chatIDFromJSON(result.Parameters.MigrateToChatID),
 		}
 	}
-	return Message{
-		ID:     result.Result.ID,
-		Date:   time.Unix(result.Result.Date, 0),
-		ChatID: chatIDFromJSON(result.Result.Chat.ID),
-		Text:   result.Result.Text,
-	}, nil
+	if err := json.Unmarshal(result.Result, dst); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidResponse, err)
+	}
+	return nil
 }
 
 func chatIDFromJSON(value json.RawMessage) string {

@@ -92,6 +92,15 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+
+	// One file uses sendPhoto/sendDocument; several are sent as albums of up to 10.
+	_, err = bot.SendPhotos(context.Background(),
+		telegram.File{Name: "a.png", Data: pngA, Caption: "first"},
+		telegram.File{Name: "b.png", Data: pngB},
+	)
+	if err != nil {
+		panic(err)
+	}
 }
 ```
 
